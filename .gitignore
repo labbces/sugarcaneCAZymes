@@ -19,3 +19,5 @@ Gemfile.lock
 
 #other
 cazy_data_20250707.txt.gz
+data/
+test.*
