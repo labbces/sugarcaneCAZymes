@@ -6,3 +6,4 @@ out/
 chunks/
 fetch.log
 *.fasta.gz
+*.acc.nr
