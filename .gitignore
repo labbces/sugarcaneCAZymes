@@ -1,3 +1,8 @@
 cazy_data_20250707.txt.gz
 data/
 test.*
+*.conservedCAZymes.*
+out/
+chunks/
+fetch.log
+*.fasta.gz
