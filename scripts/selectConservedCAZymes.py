@@ -333,8 +333,8 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
                         for fam in subfamilies1_list:
                             match = re.match(r'^(([A-Za-z]+)\d+)_?', fam)
                             if match:
-                                unique_classes1.add(match.group(1))
-                                unique_families1.add(match.group(2))
+                                unique_classes1.add(match.group(2))
+                                unique_families1.add(match.group(1))
                         if len(unique_classes1) > 1:
                             classes1 = ','.join(sorted(unique_classes1))
                         else:
@@ -354,8 +354,8 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
                         for fam in subfamilies2_list:
                             match = re.match(r'^(([A-Za-z]+)\d+)_?', fam)
                             if match:
-                                unique_classes2.add(match.group(1))
-                                unique_families2.add(match.group(2))
+                                unique_classes2.add(match.group(2))
+                                unique_families2.add(match.group(1))
                         if len(subfamilies2_list) > 1:
                             sub_families2 = ','.join(sorted(subfamilies2_list))
                         else:
@@ -395,12 +395,14 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
 args = parse_arguments()
 targetCAZyFamilies = {
     #notes for Igor: GH43 subfamilies 7 and 16 are both in Endo-Xylanases and Arabinofuranosidases
+    #There are no subfamilies for GH38 in CAZY
+    #GH 43 only have 40 subfamilie sin CAZY, there is no subfamily 177
     'Endo-xilanases' :{
         "GH5":  {"class": "GH", "subfamilies": {21, 34, 35}},
         "GH10": {"class": "GH", "subfamilies": None},  # include entire family
         "GH11": {"class": "GH", "subfamilies": None},
         "GH8": {"class": "GH", "subfamilies": None},
-        "GH38": {"class": "GH", "subfamilies": {7, 8}},
+        "GH38": {"class": "GH", "subfamilies": {7, 8}}, 
         "GH43": {"class": "GH", "subfamilies": {7, 16, 177}},
         "GH98": {"class": "GH", "subfamilies": None},
         "GH141": {"class": "GH", "subfamilies": None},
@@ -448,6 +450,7 @@ for group, families in targetCAZyFamilies.items():
         entry['group'] = group
         family_to_targets[fam].append(entry)
 
+
 dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/')
 # print("Read dbCAN results:", dbcan_res.keys())
 dbcan_res = select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=dbcan_res, verbose=args.verbose)
@@ -463,7 +466,8 @@ log(f"Writing conserved CAZymes to: {conserved_cazymes_file}", 1, args.verbose)
 print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode1.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes)
 for node1 in dbcan_res:
     for node2 in dbcan_res[node1]:
-            classes1 = dbcan_res[node1][node2]["node1.dbcan.classes"].split(',')
+            classes_node1 = dbcan_res[node1][node2]["node1.dbcan.classes"].split(',')
+            classes_node2 = dbcan_res[node1][node2]["node2.dbcan.classes"].split(',')
             print(f'{dbcan_res[node1][node2]["node1.sp.name"]}\t'
                   f'{dbcan_res[node1][node2]["node1.seq.name"]}\t'
                   f'{dbcan_res[node1][node2]["node1.seq.len"]}\t'
