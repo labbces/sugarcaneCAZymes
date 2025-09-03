@@ -7,3 +7,7 @@ chunks/
 fetch.log
 *.fasta.gz
 *.acc.nr
+cazy_proteins_dbcan.tsv.gz
+dbcan_family_vs_cazy_families.tsv
+dbcan_vs_cazy_families.tsv
+dbcan_vs_cazy_families_perseq.tsv
