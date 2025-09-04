@@ -297,8 +297,15 @@ def produce_families_strs(subfamilies_list=None, family_to_targets=None):
     for ufam in unique_families:
         if ufam in family_to_targets:
             for target_group in family_to_targets[ufam]:
-                if family_to_targets[ufam][target_group]['subfamilies'] is None or any(subfam in subfamilies_list for subfam in map(str, family_to_targets[ufam][target_group]['subfamilies'])):
+                if family_to_targets[ufam][target_group]['subfamilies'] is None:
                     ufam_type.add(target_group)
+                else:
+                    for subfam in subfamilies_list:
+                        if subfam.startswith(ufam+'_'):
+                            subfam_num = subfam.split('_')[1]
+                            if subfam_num in map(str, family_to_targets[ufam][target_group]['subfamilies']):
+                                ufam_type.add(target_group)
+
     ufam_type_str = 'N/A'
     if ufam_type:
         ufam_type_str = ','.join(sorted(ufam_type))
@@ -537,18 +544,13 @@ def select_diamond_results(diamond_folder='data/diamond',
 # ======================
 args = parse_arguments()
 targetCAZyFamilies = {
-    # TODO:
-    # Notes (to curate): 
-    # - GH43 subfamilies 7 and 16 appear under both Endo-Xylanases and Arabinofuranosidases.
-    # - There are no subfamilies for GH38 in CAZy (verify curated set below).
-    # - GH43 has ~40 subfamilies in CAZy; ensure only valid ones are listed.
     'Endo-xilanases' :{
         "GH5":  {"class": "GH", "subfamilies": {21, 34, 35}},
         "GH10": {"class": "GH", "subfamilies": None},  # include entire family
         "GH11": {"class": "GH", "subfamilies": None},
         "GH8": {"class": "GH", "subfamilies": None},
-        "GH38": {"class": "GH", "subfamilies": {7, 8}}, 
-        "GH43": {"class": "GH", "subfamilies": {7, 16, 177}},
+        "GH30": {"class": "GH", "subfamilies": {7, 8}}, 
+        "GH43": {"class": "GH", "subfamilies": {7, 16, 17}}, # also in Arabinofuranosidases
         "GH98": {"class": "GH", "subfamilies": None},
         "GH141": {"class": "GH", "subfamilies": None},
         "CE1":  {"class": "CE", "subfamilies": None}, 
@@ -576,7 +578,7 @@ targetCAZyFamilies = {
         "GH113": {"class": "GH", "subfamilies": { None }},
         "GH134": {"class": "GH", "subfamilies": { None }},
     },
-    'alpha-Galactosidases':{
+    'Alpha-Galactosidases':{
         "GH27": {"class": "GH", "subfamilies": { None }},
         "GH36": {"class": "GH", "subfamilies": { None }},
         "GH57": {"class": "GH", "subfamilies": { None }},
@@ -592,6 +594,11 @@ for group, families in targetCAZyFamilies.items():
         if fam not in family_to_targets:
             family_to_targets[fam] = {}
         entry = info.copy()
+        subs = entry.get('subfamilies')
+        # If it's {None} or empty set → treat as None (whole family)
+        if subs == {None} or subs == set():
+            entry['subfamilies'] = None
+            
         family_to_targets[fam][group] = entry
 
 # ----------------------------------------
