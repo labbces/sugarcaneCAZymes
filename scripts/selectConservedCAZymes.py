@@ -453,7 +453,7 @@ for group, families in targetCAZyFamilies.items():
 
 dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/')
 # print("Read dbCAN results:", dbcan_res.keys())
-dbcan_res = select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=dbcan_res, family_to_targets=family_to_targets,verbose=args.verbose)
+dbcan_res = select_diamond_results(diamond_folder='data/diamond.orig', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=dbcan_res, family_to_targets=family_to_targets,verbose=args.verbose)
 #Conserved CAZymes out file
 nodes, edges =to_graph_structs(dbcan_res, undirected=True)
 write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=False)
@@ -466,7 +466,7 @@ log(f"Writing conserved CAZymes to: {conserved_cazymes_file}", 1, args.verbose)
 print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes)
 for node1 in dbcan_res:
     for node2 in dbcan_res[node1]:
-            print(f'{dbcan_res[node1][node2]["node1.sp.name"]}\t'
+            res_str=(f'{dbcan_res[node1][node2]["node1.sp.name"]}\t'
                   f'{dbcan_res[node1][node2]["node1.seq.name"]}\t'
                   f'{dbcan_res[node1][node2]["node1.seq.len"]}\t'
                   f'{dbcan_res[node1][node2]["node1.dbcan.subfamilies"]}\t'
@@ -486,4 +486,7 @@ for node1 in dbcan_res:
                   f'{dbcan_res[node1][node2]["qalgnper"]:.1f}\t'
                   f'{dbcan_res[node1][node2]["salgnlen"]}\t'
                   f'{dbcan_res[node1][node2]["salgnper"]:.1f}\t'
-                  f'{dbcan_res[node1][node2]["bidirectional"]}', file=out_conserved_cazymes)
+                  f'{dbcan_res[node1][node2]["bidirectional"]}')
+            print(res_str, file=out_conserved_cazymes)
+            if dbcan_res[node1][node2]["node1.dbcan.target_type"] != 'N/A' or dbcan_res[node1][node2]["node2.dbcan.target_type"] != 'N/A':
+                print(res_str, file=out_conserved_cazymes_targetfams)
