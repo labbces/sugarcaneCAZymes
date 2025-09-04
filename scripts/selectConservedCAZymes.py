@@ -1,3 +1,39 @@
+# -*- coding: utf-8 -*-
+"""
+Pipeline to detect conserved CAZymes across species using:
+  1) dbCAN functional annotation tables (per-species)
+  2) DIAMOND all-vs-all tabular alignments (per species pair)
+  3) FASTA protein sequences per species
+
+Inputs (by function):
+- read_dbcan_tables(folder_path):
+    Expects files: <species>.dbCAN.overview.tsv.gz
+    Format (tsv, gz): keep rows where the penultimate column == '3' (high-confidence).
+    Maps: gene/protein ID -> final dbCAN family annotation (last column; pipe-separated subfamilies).
+
+- select_diamond_results():
+    diamond_folder:
+        - SpeciesIDs.txt
+            Lines like: 1:SpeciesA.faa
+            (integer id):(species fasta name, .faa suffix will be stripped)
+        - SequenceIDs.txt.gz
+            Lines like: 1_000001:SeqName1 some extra description
+            (speciesID_seqSerial):(sequence identifier and description)
+            Only the first token after ':' is taken as the sequence name.
+        - BlastX_Y.txt.gz
+            DIAMOND tabular (outfmt 6) per species pair X vs Y.
+            Default 12 cols: qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
+
+    sequences_folder:
+        - One gzipped FASTA per species: <species>.faa.gz
+        - An on-disk index will be created: <species>.idx (Bio.SeqIO.index_db)
+
+Outputs:
+- GraphML file: <prefix>.conservedCAZymes.graphml
+- Tabular files:
+    * <prefix>.conservedCAZymes.txt              (all conserved)
+    * <prefix>.conservedCAZymes.targetfams.txt   (subset where the CAZy families match your target groups)
+"""
 from collections import defaultdict
 import os
 import glob
@@ -21,24 +57,24 @@ def log (msg, level=1,  verbose=0):
     # 0 Silent CRITICAL Only critical errors
     # 1 Normal INFO     Key steps, progress messages
     # 2 Debug  DEBUG    Extra info: file paths, filtered seqs
-    # 3 Trace  TRACE    Fine-grained steps. per-TE messages, etc
+    # 3 Trace  TRACE    Fine-grained steps
     if verbose >= level:
         print(msg)
 
 def read_dbcan_tables(folder_path):
     """
-    Read dbCAN overview files (pattern: SPP.dbCAN.overview.tsv.gz) and return a mapping of species to selected hits.
+    Read dbCAN "overview" files and select high-confidence hits.
 
-    For each file:
-      - species_name is taken from the filename prefix (text before the first dot).
-      - lines are parsed as tab-separated fields; empty lines are ignored.
-      - only keep rows with at least two columns and with the penultimate column equal to '3' (high-confidence hits).
-      - for each kept row map the first column (gene/protein ID) to the last column (CAZyme family/annotation).
+    Input:
+      folder_path/ <species>.dbCAN.overview.tsv.gz
+        - gzip compressed TSV
+        - Keep rows with penultimate column == '3' (high confidence)
+        - Map: first column (gene/protein ID) -> last column (CAZy annotated families/subfamilies)
+          Note: last column may be pipe-separated subfamilies (e.g., GH5_21|GH5_34|...).
 
     Returns:
-        dict: { species_name (str): { gene_id (str): annotation (str), ... }, ... }
-        Example: { "SPP": { "geneX": "GH5", "geneY": "CE1" }, "Other": { ... } }
-
+      dict: { species_name: { gene_id: annotation_str, ... }, ... }
+      Example: { "SpeciesA": { "geneX": "GH5_21|GH5_34", "geneY": "CE1" }, ... }
     """
     dbcan_dict = {}
     pattern = os.path.join(folder_path, "*.dbCAN.overview.tsv.gz")
@@ -53,10 +89,27 @@ def read_dbcan_tables(folder_path):
 
 def to_graph_structs(keep_dbcan_results, undirected=True):
     """
-    Build:
-      nodes: id -> attrs  (node id = sequence name)
-      edges: [(u, v, attrs), ...]
-    Dedupes reciprocal edges if undirected=True.
+    Convert conserved hits into graph data structures.
+
+    Input:
+      keep_dbcan_results: nested dict keyed by "Species__SeqName"
+        {
+          "SpA__Seq1": {
+            "SpB__Seq2": {
+               'node1.sp.name': 'SpA', 'node1.seq.name': 'Seq1', ...
+               'node2.sp.name': 'SpB', 'node2.seq.name': 'Seq2', ...
+               'pident': float, 'evalue': float, ...
+            },
+            ...
+          },
+          ...
+        }
+
+    Returns:
+      nodes: dict { node_id(str) -> attrs(dict) }
+             node_id is the plain sequence name (not "Species__Seq")
+      edges: list [ (u, v, attrs_dict), ... ]
+             If undirected=True, reciprocal edges are deduplicated by (sorted(u,v)).
     """
     nodes = {}
     edges = []
@@ -115,12 +168,17 @@ def to_graph_structs(keep_dbcan_results, undirected=True):
     return nodes, edges
 
 def _gml_type(value):
+    """Infer GraphML attribute types."""
     if isinstance(value, bool):  return "boolean"
     if isinstance(value, int):   return "int"
     if isinstance(value, float): return "double"
     return "string"
 
 def _collect_attr_schema(nodes_dict, edges_list):
+    """
+    Inspect node/edge attributes to define GraphML key schema
+    (attribute names + types).
+    """
     node_keys, edge_keys = {}, {}
     for _, attrs in nodes_dict.items():
         for k, v in (attrs or {}).items():
@@ -131,6 +189,16 @@ def _collect_attr_schema(nodes_dict, edges_list):
     return node_keys, edge_keys
 
 def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
+    """
+    Serialize nodes/edges into GraphML.
+
+    Args:
+      nodes: dict {node_id: {attr: value}}
+      edges: list of (u, v, attrs_dict)
+      path: output .graphml filename (str)
+      directed: bool (GraphML 'edgedefault')
+      default_edge_weight: if provided, inject 'weight' for edges missing it
+    """
     NS = {"g": "http://graphml.graphdrawing.org/xmlns"}
     ET.register_namespace("", NS["g"])
     graphml = ET.Element(ET.QName(NS["g"], "graphml"))
@@ -140,6 +208,9 @@ def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
     key_id = 0
     key_index = {}
     def add_key(name, domain, gtype, default=None):
+        """
+        Register <key> in GraphML header and store mapping (domain, name) -> key id.
+        """
         nonlocal key_id
         kid = f"k{key_id}"; key_id += 1
         key_el = ET.SubElement(
@@ -188,6 +259,20 @@ def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
         fh.write(pretty)
 
 def produce_families_strs(subfamilies_list=None, family_to_targets=None):
+    """
+    Summarize dbCAN subfamilies into:
+      - classes   (e.g., 'GH', 'CE'), possibly comma-joined if mixed
+      - sub_families (string with comma-joined GHx_y terms, or single, or None)
+      - families  (e.g., 'GH5', 'CE1'), possibly comma-joined if mixed
+      - ufam_type_str (comma-joined target group labels from 'family_to_targets')
+
+    Args:
+      subfamilies_list: list like ['GH5_21','GH5_34'] (parsed from dbCAN string split by '|')
+      family_to_targets: dict { 'GH5': { 'Endo-xilanases': {'class': 'GH', 'subfamilies': {21,34,35}}, ...}, ... }
+
+    Returns:
+      (classes, sub_families, families, ufam_type_str)
+    """
     unique_classes = set()
     unique_families = set()
     for fam in subfamilies_list:
@@ -220,20 +305,54 @@ def produce_families_strs(subfamilies_list=None, family_to_targets=None):
     # print(ufam_type_str)
     return classes, sub_families, families, ufam_type_str
 
-def select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=None, family_to_targets=None, verbose=1):
+def select_diamond_results(diamond_folder='data/diamond', 
+                           species_ids_file='SpeciesIDs.txt', 
+                           sequences_ids_file='SequenceIDs.txt.gz', 
+                           sequences_folder='data/proteins/', 
+                           dbcan_res=None, 
+                           family_to_targets=None, 
+                           verbose=1):
     """
-    Read gzip tabular DIAMOND results named BlastX_Y.txt.gz from diamond_folder.
-    Skip files where X == Y. Map integer IDs X/Y to species names using species_ids_file.
+    Integrate DIAMOND results + dbCAN to find conserved CAZymes.
 
-    select CAZymes conserved across species based on DIAMOND results and dbCAN annotations.
+    Input files (located under 'diamond_folder'):
+      - SpeciesIDs.txt (text)
+          Lines: "<int_id>:<species_name>.faa"
+          Example: "1:Zea_mays.faa"
+          Note: ".faa" is stripped to get species_name.
+          Must match species present in dbCAN overview files already read.
+
+      - SequenceIDs.txt.gz (gzip)
+          Lines: "<spid>_<serial>:<seqname> [optional description]"
+          Example: "1_000001:Zm00001d034567.1 protein..."
+          Only the first token after ':' (split by space) is used as the sequence name.
+
+      - BlastX_Y.txt.gz (gzip) files:
+          DIAMOND outfmt 6 with standard columns:
+          qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
+          Where qseqid/sseqid are "<spid>_<serial>"
+
+    Protein sequences (sequences_folder):
+      - One gzipped FASTA per species: "<species_name>.faa.gz"
+      - Index file "<species_name>.idx" is created/used by Bio.SeqIO.index_db for random access.
+
+    Filtering criteria for conserved hits:
+      - pident >= 80
+      - evalue < 1e-5
+      - query/subject coverage >= 50% of their respective protein lengths
+      - bidirectional flag set if reciprocal hit already present in the reverse file.
+
+    Returns:
+      keep_dbcan_results (nested dict) as consumed by 'to_graph_structs'.
     """
     
     log(f"Reading DIAMOND results from: {diamond_folder} using species IDs from: {species_ids_file} and sequence IDs from: {sequences_ids_file}", 1, verbose)
 
     keep_dbcan_results = defaultdict(dict)
-
-    # read species id -> name mapping
-    # just keep species that are in dbcan_res
+    # ------------------------------------------------------------
+    # 1) Read SpeciesIDs.txt: map int ID -> species name
+    #    Only species present in dbCAN results are kept.
+    # ------------------------------------------------------------
     id_to_spname = {}
     try:
         species_ids_path = os.path.join(diamond_folder, species_ids_file)
@@ -259,9 +378,12 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
         print(f"Error: Species IDs file '{species_ids_file}' not found. Stopping processing.")
         raise
 
-    # read sequence id -> name mapping
-    # just keep sequences that are in dbcan_res
-    id_to_seqname = defaultdict(dict)  # especie -> {seqid: seqname}
+    # ------------------------------------------------------------
+    # 2) Read SequenceIDs.txt.gz: map "<spid>_<serial>" -> "<seqname>"
+    #    Only sequences that appear in dbCAN for that species are kept.
+    # ------------------------------------------------------------
+
+    id_to_seqname = defaultdict(dict) # species -> { '<spid>_<serial>': 'SeqName' }
     try:
         sequences_ids_path = os.path.join(diamond_folder, sequences_ids_file)
         with gzip.open(sequences_ids_path, 'rt') as fh:
@@ -287,7 +409,10 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
 
     for i in id_to_spname:
         log(f'C:{i}\t{id_to_spname[int(i)]}\t{len(id_to_seqname[id_to_spname[int(i)]].keys())}',2, verbose=1)
-    # read DIAMOND results
+
+    # ------------------------------------------------------------
+    # 3) Iterate DIAMOND BlastX_Y.txt.gz files and collect conserved hits
+    # ------------------------------------------------------------
     pattern = os.path.join(diamond_folder, "Blast*_*.txt.gz")
     for file_path in glob.glob(pattern):
         fname = os.path.basename(file_path)
@@ -300,15 +425,17 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
         x_name = id_to_spname.get(x_id, str(x_id))
         y_name = id_to_spname.get(y_id, str(y_id))
         
-        # Build disk-based index for protein sequences for both species (x_name and y_name)
-        # Assumes sequence files are named as "{species}.faa.gz" in a folder, e.g., "data/proteins/"
+        # ------------------------------------------------------------
+        # Build (or reuse) on-disk FASTA indexes for both species
+        # Expect "<species>.faa.gz" files in sequences_folder
+        # ------------------------------------------------------------
 
         seq_indexes = {}
 
         for sp in [x_name, y_name]:
             seq_file = os.path.join(sequences_folder, f"{sp}.faa.gz") #sequence files must be compressed using bgzip for random access
             if os.path.exists(seq_file):
-            # Create an index file for each species using Bio.SeqIO.index_db
+                # Create a persistent index database for random access to sequences
                 index_db_path = os.path.join(sequences_folder, f"{sp}.idx")
                 log(f'{index_db_path}',2,verbose)
                 if not os.path.exists(index_db_path):
@@ -320,14 +447,17 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
             else:
                 print(f"Warning: Sequence file for species '{sp}' not found at {seq_file}. Stopping now. Make sure all protein files are present in the {sequences_folder} folder.")
                 exit(1)
-
+ 
+        # Open the two species indexes
         idx1=SeqIO.index_db(seq_indexes[x_name]) 
         idx2=SeqIO.index_db(seq_indexes[y_name]) 
+
         log(f'Reading DIAMOND results for: {x_name} vs {y_name}',1, verbose)
 
+        # Read DIAMOND lines and apply filters
         with gzip.open(file_path, 'rt') as fh:
-            #Default fields in diamond output:
-            #qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
+            # outfmt 6 (12 default columns):
+            # qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -337,36 +467,45 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
                     continue
                 sp1,seqser1=cols[0].split("_")
                 sp2,seqser2=cols[1].split("_")
-                # print(f'{file_path}\t{line}')
-                # print(f'Species 1: {sp1} {id_to_spname[int(sp1)]}, Sequence 1: {cols[0]}')
-                # print(f'Species 2: {sp2} {id_to_spname[int(sp2)]}, Sequence 2: {cols[1]}')
-                if cols[0] in id_to_seqname[id_to_spname[int(sp1)]] and cols[1] in id_to_seqname[id_to_spname[int(sp2)]]:
+
+                # Keep only if both qseqid and sseqid are known in dbCAN mapping
+                if cols[0] in id_to_seqname[id_to_spname[int(sp1)]]and cols[1] in id_to_seqname[id_to_spname[int(sp2)]]:
                     seqname1=id_to_seqname[id_to_spname[int(sp1)]][cols[0]]
                     seqname2=id_to_seqname[id_to_spname[int(sp2)]][cols[1]]
-                    # print(f'seqname1: {seqname1}, seqname2: {seqname2}')
+
+                    # Protein lengths via indexed FASTA (random access)
                     seq_record1 = idx1[seqname1]
                     seq_record2 = idx2[seqname2]
                     seq_len1 = len(seq_record1.seq)
                     seq_len2 = len(seq_record2.seq)
+
+                    # Alignment spans and coverage (%)
                     qalgnlen=int(cols[7]) - int(cols[6]) + 1
                     salgnlen=int(cols[9]) - int(cols[8]) + 1
                     qalgnper=qalgnlen/seq_len1 * 100
                     salgnper=salgnlen/seq_len2 * 100
+
+                    # Compose compound keys: "Species__SeqName"
                     spseqname1 = f'{id_to_spname[int(sp1)]}__{seqname1}'
                     spseqname2 = f'{id_to_spname[int(sp2)]}__{seqname2}'
-                    #filter based on alignment metrics
-                    #keeping hits with at least 80% identity, e-value < 1e-5, and at least 50% alignment coverage in both sequences
+
+                    # filter based on alignment metrics
+                    # keeping hits with at least 80% identity, e-value < 1e-5, and at least 50% alignment coverage in both sequences
                     bidirectional = False
                     if float(cols[2]) >= 80 and float(cols[10]) < 1e-5 and qalgnper >= 50 and salgnper >= 50:
+
+                        # If we already stored the reverse edge, mark it as bidirectional and skip adding the duplicate
                         if (spseqname2 in keep_dbcan_results) and (spseqname1 in keep_dbcan_results[spseqname2]):
                                 bidirectional = True
                                 keep_dbcan_results[spseqname2][spseqname1]['bidirectional'] = bidirectional
                                 continue
+                        # Parse dbCAN subfamilies (pipe-separated string) for both nodes
                         subfamilies1_list=dbcan_res[id_to_spname[int(sp1)]][seqname1].split('|')
                         classes1, sub_families1, families1, ufam1_type_str =produce_families_strs(subfamilies1_list,family_to_targets)
                         subfamilies2_list=dbcan_res[id_to_spname[int(sp2)]][seqname2].split('|')
                         classes2, sub_families2, families2, ufam2_type_str =produce_families_strs(subfamilies2_list,family_to_targets)
 
+                        # Store record
                         keep_dbcan_results[spseqname1][spseqname2] = {
                             'node1.sp.name': id_to_spname[int(sp1)],
                             'node1.seq.name': seqname1,
@@ -393,11 +532,16 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
                         # print(f'{id_to_spname[int(sp1)]}\t{seqname1}\t{dbcan_res[id_to_spname[int(sp1)]][seqname1]}\t{id_to_spname[int(sp1)]}\t{seq_len1}\t{seqname2}\t{dbcan_res[id_to_spname[int(sp2)]][seqname2]}\t{cols[2]}\t{cols[10]}\t{seq_len2}\t{qalgnlen}\t{qalgnper:.1f}\t{salgnlen}\t{salgnper:.1f}', file=out_conserved_cazymes)
     return keep_dbcan_results
 
+# ======================
+# MAIN EXECUTION
+# ======================
 args = parse_arguments()
 targetCAZyFamilies = {
-    #notes for Igor: GH43 subfamilies 7 and 16 are both in Endo-Xylanases and Arabinofuranosidases
-    #There are no subfamilies for GH38 in CAZY
-    #GH 43 only have 40 subfamilie sin CAZY, there is no subfamily 177
+    # TODO:
+    # Notes (to curate): 
+    # - GH43 subfamilies 7 and 16 appear under both Endo-Xylanases and Arabinofuranosidases.
+    # - There are no subfamilies for GH38 in CAZy (verify curated set below).
+    # - GH43 has ~40 subfamilies in CAZy; ensure only valid ones are listed.
     'Endo-xilanases' :{
         "GH5":  {"class": "GH", "subfamilies": {21, 34, 35}},
         "GH10": {"class": "GH", "subfamilies": None},  # include entire family
@@ -450,20 +594,43 @@ for group, families in targetCAZyFamilies.items():
         entry = info.copy()
         family_to_targets[fam][group] = entry
 
-
+# ----------------------------------------
+# Load dbCAN overview results for all species
+# ----------------------------------------
 dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/')
-# print("Read dbCAN results:", dbcan_res.keys())
-dbcan_res = select_diamond_results(diamond_folder='data/diamond.orig', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=dbcan_res, family_to_targets=family_to_targets,verbose=args.verbose)
-#Conserved CAZymes out file
+
+# ----------------------------------------
+# Read DIAMOND results, filter, and consolidate conserved CAZymes
+# ----------------------------------------
+dbcan_res = select_diamond_results(diamond_folder='data/diamond.orig', 
+                                   species_ids_file='SpeciesIDs.txt', 
+                                   sequences_ids_file='SequenceIDs.txt.gz', 
+                                   sequences_folder='data/proteins/', 
+                                   dbcan_res=dbcan_res, 
+                                   family_to_targets=family_to_targets,
+                                   verbose=args.verbose)
+
+# ----------------------------------------
+# Build graph and write GraphML
+# ----------------------------------------
 nodes, edges =to_graph_structs(dbcan_res, undirected=True)
 write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=False)
+
+# ----------------------------------------
+# Write tabular outputs
+# ----------------------------------------
 conserved_cazymes_file = f"{args.prefix}.conservedCAZymes.txt"
 conserved_cazymes_targetfams_file = f"{args.prefix}.conservedCAZymes.targetfams.txt"
 out_conserved_cazymes = open(conserved_cazymes_file, 'wt')
 out_conserved_cazymes_targetfams = open(conserved_cazymes_targetfams_file, 'wt')
 
 log(f"Writing conserved CAZymes to: {conserved_cazymes_file}", 1, args.verbose)
+
+# Header line for main table
 print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes)
+print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes_targetfams)
+
+# Emit records for all conserved pairs; also write a filtered file for target families
 for node1 in dbcan_res:
     for node2 in dbcan_res[node1]:
             res_str=(f'{dbcan_res[node1][node2]["node1.sp.name"]}\t'
@@ -488,5 +655,7 @@ for node1 in dbcan_res:
                   f'{dbcan_res[node1][node2]["salgnper"]:.1f}\t'
                   f'{dbcan_res[node1][node2]["bidirectional"]}')
             print(res_str, file=out_conserved_cazymes)
+
+            # If either side matches a configured target group, also write to the target-families file
             if dbcan_res[node1][node2]["node1.dbcan.target_type"] != 'N/A' or dbcan_res[node1][node2]["node2.dbcan.target_type"] != 'N/A':
                 print(res_str, file=out_conserved_cazymes_targetfams)
