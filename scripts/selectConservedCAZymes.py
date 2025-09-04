@@ -76,6 +76,7 @@ def to_graph_structs(keep_dbcan_results, undirected=True):
                     'dbcan.subfamilies': rec['node1.dbcan.subfamilies'],
                     'dbcan.families': rec['node1.dbcan.families'],
                     'dbcan.classes': rec['node1.dbcan.classes'],
+                    'dbcan.target_type': rec['node1.dbcan.target_type'],
                 }
             if n2 not in nodes:
                 nodes[n2] = {
@@ -84,6 +85,7 @@ def to_graph_structs(keep_dbcan_results, undirected=True):
                     'dbcan.subfamilies': rec['node2.dbcan.subfamilies'],
                     'dbcan.families': rec['node2.dbcan.families'],
                     'dbcan.classes': rec['node2.dbcan.classes'],
+                    'dbcan.target_type': rec['node2.dbcan.target_type'],
                 }
 
             # Edge attributes (carry alignment metrics + bidirectional flag)
@@ -185,7 +187,40 @@ def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
     with open(path, "wb") as fh:
         fh.write(pretty)
 
-def select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=None, verbose=1):
+def produce_families_strs(subfamilies_list=None, family_to_targets=None):
+    unique_classes = set()
+    unique_families = set()
+    for fam in subfamilies_list:
+        match = re.match(r'^(([A-Za-z]+)\d+)_?', fam)
+        if match:
+            unique_classes.add(match.group(2))
+            unique_families.add(match.group(1))
+    if len(unique_classes) > 1:
+        classes = ','.join(sorted(unique_classes))
+    else:
+        classes = next(iter(unique_classes)) if unique_classes else None
+    if len(subfamilies_list) > 1:
+        sub_families = ','.join(sorted(subfamilies_list))
+    else:
+        sub_families = next(iter(subfamilies_list)) if subfamilies_list else None
+    if len(unique_families) > 1:
+        families = ','.join(sorted(unique_families))
+    else:
+        families = next(iter(unique_families)) if unique_families else None
+    
+    ufam_type= set()
+    for ufam in unique_families:
+        if ufam in family_to_targets:
+            for target_group in family_to_targets[ufam]:
+                if family_to_targets[ufam][target_group]['subfamilies'] is None or any(subfam in subfamilies_list for subfam in map(str, family_to_targets[ufam][target_group]['subfamilies'])):
+                    ufam_type.add(target_group)
+    ufam_type_str = 'N/A'
+    if ufam_type:
+        ufam_type_str = ','.join(sorted(ufam_type))
+    # print(ufam_type_str)
+    return classes, sub_families, families, ufam_type_str
+
+def select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=None, family_to_targets=None, verbose=1):
     """
     Read gzip tabular DIAMOND results named BlastX_Y.txt.gz from diamond_folder.
     Skip files where X == Y. Map integer IDs X/Y to species names using species_ids_file.
@@ -328,46 +363,10 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
                                 keep_dbcan_results[spseqname2][spseqname1]['bidirectional'] = bidirectional
                                 continue
                         subfamilies1_list=dbcan_res[id_to_spname[int(sp1)]][seqname1].split('|')
-                        unique_classes1 = set()
-                        unique_families1 = set()
-                        for fam in subfamilies1_list:
-                            match = re.match(r'^(([A-Za-z]+)\d+)_?', fam)
-                            if match:
-                                unique_classes1.add(match.group(2))
-                                unique_families1.add(match.group(1))
-                        if len(unique_classes1) > 1:
-                            classes1 = ','.join(sorted(unique_classes1))
-                        else:
-                            classes1 = next(iter(unique_classes1)) if unique_classes1 else None
-                        if len(subfamilies1_list) > 1:
-                            sub_families1 = ','.join(sorted(subfamilies1_list))
-                        else:
-                            sub_families1 = next(iter(subfamilies1_list)) if subfamilies1_list else None
-                        if len(unique_families1) > 1:
-                            families1 = ','.join(sorted(unique_families1))
-                        else:
-                            families1 = next(iter(unique_families1)) if unique_families1 else None
-
+                        classes1, sub_families1, families1, ufam1_type_str =produce_families_strs(subfamilies1_list,family_to_targets)
                         subfamilies2_list=dbcan_res[id_to_spname[int(sp2)]][seqname2].split('|')
-                        unique_classes2 = set()
-                        unique_families2 = set()
-                        for fam in subfamilies2_list:
-                            match = re.match(r'^(([A-Za-z]+)\d+)_?', fam)
-                            if match:
-                                unique_classes2.add(match.group(2))
-                                unique_families2.add(match.group(1))
-                        if len(subfamilies2_list) > 1:
-                            sub_families2 = ','.join(sorted(subfamilies2_list))
-                        else:
-                            sub_families2 = next(iter(subfamilies2_list)) if subfamilies2_list else None
-                        if len(unique_classes2) > 1:
-                            classes2 = ','.join(sorted(unique_classes2))
-                        else:
-                            classes2 = next(iter(unique_classes2)) if unique_classes2 else None
-                        if len(unique_families2) > 1:
-                            families2 = ','.join(sorted(unique_families2))
-                        else:
-                            families2 = next(iter(unique_families2)) if unique_families2 else None
+                        classes2, sub_families2, families2, ufam2_type_str =produce_families_strs(subfamilies2_list,family_to_targets)
+
                         keep_dbcan_results[spseqname1][spseqname2] = {
                             'node1.sp.name': id_to_spname[int(sp1)],
                             'node1.seq.name': seqname1,
@@ -375,12 +374,14 @@ def select_diamond_results(diamond_folder='data/diamond', species_ids_file='Spec
                             'node1.dbcan.subfamilies': sub_families1,
                             'node1.dbcan.families': families1,
                             'node1.dbcan.classes': classes1,
+                            'node1.dbcan.target_type': ufam1_type_str,
                             'node2.sp.name': id_to_spname[int(sp2)],
                             'node2.seq.name': seqname2,
                             'node2.seq.len': seq_len2,
                             'node2.dbcan.subfamilies': sub_families2,
                             'node2.dbcan.families': families2,
                             'node2.dbcan.classes': classes2,
+                            'node2.dbcan.target_type': ufam2_type_str,
                             'pident': float(cols[2]),
                             'evalue': float(cols[10]),
                             'qalgnlen': qalgnlen,
@@ -445,15 +446,14 @@ family_to_targets = {}
 for group, families in targetCAZyFamilies.items():
     for fam, info in families.items():
         if fam not in family_to_targets:
-            family_to_targets[fam] = []
+            family_to_targets[fam] = {}
         entry = info.copy()
-        entry['group'] = group
-        family_to_targets[fam].append(entry)
+        family_to_targets[fam][group] = entry
 
 
 dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/')
 # print("Read dbCAN results:", dbcan_res.keys())
-dbcan_res = select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=dbcan_res, verbose=args.verbose)
+dbcan_res = select_diamond_results(diamond_folder='data/diamond', species_ids_file='SpeciesIDs.txt', sequences_ids_file='SequenceIDs.txt.gz', sequences_folder='data/proteins/', dbcan_res=dbcan_res, family_to_targets=family_to_targets,verbose=args.verbose)
 #Conserved CAZymes out file
 nodes, edges =to_graph_structs(dbcan_res, undirected=True)
 write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=False)
@@ -463,23 +463,23 @@ out_conserved_cazymes = open(conserved_cazymes_file, 'wt')
 out_conserved_cazymes_targetfams = open(conserved_cazymes_targetfams_file, 'wt')
 
 log(f"Writing conserved CAZymes to: {conserved_cazymes_file}", 1, args.verbose)
-print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode1.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes)
+print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes)
 for node1 in dbcan_res:
     for node2 in dbcan_res[node1]:
-            classes_node1 = dbcan_res[node1][node2]["node1.dbcan.classes"].split(',')
-            classes_node2 = dbcan_res[node1][node2]["node2.dbcan.classes"].split(',')
             print(f'{dbcan_res[node1][node2]["node1.sp.name"]}\t'
                   f'{dbcan_res[node1][node2]["node1.seq.name"]}\t'
                   f'{dbcan_res[node1][node2]["node1.seq.len"]}\t'
                   f'{dbcan_res[node1][node2]["node1.dbcan.subfamilies"]}\t'
                   f'{dbcan_res[node1][node2]["node1.dbcan.families"]}\t'
                   f'{dbcan_res[node1][node2]["node1.dbcan.classes"]}\t'
+                  f'{dbcan_res[node1][node2]["node1.dbcan.target_type"]}\t'
                   f'{dbcan_res[node1][node2]["node2.sp.name"]}\t'
                   f'{dbcan_res[node1][node2]["node2.seq.name"]}\t'
                   f'{dbcan_res[node1][node2]["node2.seq.len"]}\t'
                   f'{dbcan_res[node1][node2]["node2.dbcan.subfamilies"]}\t'
                   f'{dbcan_res[node1][node2]["node2.dbcan.families"]}\t'
                   f'{dbcan_res[node1][node2]["node2.dbcan.classes"]}\t'
+                  f'{dbcan_res[node1][node2]["node2.dbcan.target_type"]}\t'
                   f'{dbcan_res[node1][node2]["pident"]}\t'
                   f'{dbcan_res[node1][node2]["evalue"]}\t'
                   f'{dbcan_res[node1][node2]["qalgnlen"]}\t'
