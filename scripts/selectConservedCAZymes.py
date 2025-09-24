@@ -61,7 +61,7 @@ def log (msg, level=1,  verbose=0):
     if verbose >= level:
         print(msg)
 
-def read_dbcan_tables(folder_path):
+def read_dbcan_tables(folder_path,summary_file=None, verbose=1):
     """
     Read dbCAN "overview" files and select high-confidence hits.
 
@@ -85,6 +85,11 @@ def read_dbcan_tables(folder_path):
             filtered_rows = [row for row in rows if len(row) >= 2 and row[-2] == '3']
             rows = {row[0]: row[-1] for row in filtered_rows}
         dbcan_dict[species_name] = rows
+    with open(summary_file, 'wt') as out_summary:
+        print("Species\t#Number Proteins with dbCAN annotation", file=out_summary)
+        for sp in sorted(dbcan_dict.keys()):
+            print(f"{sp}\t{len(dbcan_dict[sp])}", file=out_summary)
+    log(f"Read dbCAN annotations for {len(dbcan_dict)} species from {folder_path}", 1, verbose)
     return dbcan_dict
 
 def to_graph_structs(keep_dbcan_results, undirected=True):
@@ -356,6 +361,7 @@ def select_diamond_results(diamond_folder='data/diamond',
     log(f"Reading DIAMOND results from: {diamond_folder} using species IDs from: {species_ids_file} and sequence IDs from: {sequences_ids_file}", 1, verbose)
 
     keep_dbcan_results = defaultdict(dict)
+    count_kepth_hits=defaultdict(lambda: defaultdict(int))
     # ------------------------------------------------------------
     # 1) Read SpeciesIDs.txt: map int ID -> species name
     #    Only species present in dbCAN results are kept.
@@ -512,6 +518,7 @@ def select_diamond_results(diamond_folder='data/diamond',
                         subfamilies2_list=dbcan_res[id_to_spname[int(sp2)]][seqname2].split('|')
                         classes2, sub_families2, families2, ufam2_type_str =produce_families_strs(subfamilies2_list,family_to_targets)
 
+                        count_kepth_hits[id_to_spname[int(sp1)]][id_to_spname[int(sp2)]]+=1
                         # Store record
                         keep_dbcan_results[spseqname1][spseqname2] = {
                             'node1.sp.name': id_to_spname[int(sp1)],
@@ -537,7 +544,7 @@ def select_diamond_results(diamond_folder='data/diamond',
                             'bidirectional': bidirectional
                         }
                         # print(f'{id_to_spname[int(sp1)]}\t{seqname1}\t{dbcan_res[id_to_spname[int(sp1)]][seqname1]}\t{id_to_spname[int(sp1)]}\t{seq_len1}\t{seqname2}\t{dbcan_res[id_to_spname[int(sp2)]][seqname2]}\t{cols[2]}\t{cols[10]}\t{seq_len2}\t{qalgnlen}\t{qalgnper:.1f}\t{salgnlen}\t{salgnper:.1f}', file=out_conserved_cazymes)
-    return keep_dbcan_results
+    return keep_dbcan_results, count_kepth_hits
 
 # ======================
 # MAIN EXECUTION
@@ -604,12 +611,13 @@ for group, families in targetCAZyFamilies.items():
 # ----------------------------------------
 # Load dbCAN overview results for all species
 # ----------------------------------------
-dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/')
+summary_file=f'{args.prefix}.dbCAN.summary.txt'
+dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/',summary_file=summary_file, verbose=args.verbose)
 
 # ----------------------------------------
 # Read DIAMOND results, filter, and consolidate conserved CAZymes
 # ----------------------------------------
-dbcan_res = select_diamond_results(diamond_folder='data/diamond.orig', 
+conserv_dbcan_res, count_kepth_hits = select_diamond_results(diamond_folder='data/diamond.orig', 
                                    species_ids_file='SpeciesIDs.txt', 
                                    sequences_ids_file='SequenceIDs.txt.gz', 
                                    sequences_folder='data/proteins/', 
@@ -620,7 +628,7 @@ dbcan_res = select_diamond_results(diamond_folder='data/diamond.orig',
 # ----------------------------------------
 # Build graph and write GraphML
 # ----------------------------------------
-nodes, edges =to_graph_structs(dbcan_res, undirected=True)
+nodes, edges =to_graph_structs(conserv_dbcan_res, undirected=True)
 write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=False)
 
 # ----------------------------------------
@@ -628,41 +636,45 @@ write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=
 # ----------------------------------------
 conserved_cazymes_file = f"{args.prefix}.conservedCAZymes.txt"
 conserved_cazymes_targetfams_file = f"{args.prefix}.conservedCAZymes.targetfams.txt"
-out_conserved_cazymes = open(conserved_cazymes_file, 'wt')
-out_conserved_cazymes_targetfams = open(conserved_cazymes_targetfams_file, 'wt')
+
+log(f"Writing summary to: {summary_file}", 1, args.verbose)
+with open(summary_file, 'at') as out_summary:
+    out_summary.write('\n##########################\n#Summary of conserved CAZymes between species pairs\n')
+    out_summary.write('\nSpecies1\tSpecies2\t#Number Conserved CAZymes\n')
+    for sp1 in count_kepth_hits:
+        for sp2 in count_kepth_hits[sp1]:
+            out_summary.write(f'{sp1}\t{sp2}\t{count_kepth_hits[sp1][sp2]}\n')
 
 log(f"Writing conserved CAZymes to: {conserved_cazymes_file}", 1, args.verbose)
-
-# Header line for main table
-print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes)
-print('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional', file=out_conserved_cazymes_targetfams)
-
 # Emit records for all conserved pairs; also write a filtered file for target families
-for node1 in dbcan_res:
-    for node2 in dbcan_res[node1]:
-            res_str=(f'{dbcan_res[node1][node2]["node1.sp.name"]}\t'
-                  f'{dbcan_res[node1][node2]["node1.seq.name"]}\t'
-                  f'{dbcan_res[node1][node2]["node1.seq.len"]}\t'
-                  f'{dbcan_res[node1][node2]["node1.dbcan.subfamilies"]}\t'
-                  f'{dbcan_res[node1][node2]["node1.dbcan.families"]}\t'
-                  f'{dbcan_res[node1][node2]["node1.dbcan.classes"]}\t'
-                  f'{dbcan_res[node1][node2]["node1.dbcan.target_type"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.sp.name"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.seq.name"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.seq.len"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.dbcan.subfamilies"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.dbcan.families"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.dbcan.classes"]}\t'
-                  f'{dbcan_res[node1][node2]["node2.dbcan.target_type"]}\t'
-                  f'{dbcan_res[node1][node2]["pident"]}\t'
-                  f'{dbcan_res[node1][node2]["evalue"]}\t'
-                  f'{dbcan_res[node1][node2]["qalgnlen"]}\t'
-                  f'{dbcan_res[node1][node2]["qalgnper"]:.1f}\t'
-                  f'{dbcan_res[node1][node2]["salgnlen"]}\t'
-                  f'{dbcan_res[node1][node2]["salgnper"]:.1f}\t'
-                  f'{dbcan_res[node1][node2]["bidirectional"]}')
-            print(res_str, file=out_conserved_cazymes)
-
-            # If either side matches a configured target group, also write to the target-families file
-            if dbcan_res[node1][node2]["node1.dbcan.target_type"] != 'N/A' or dbcan_res[node1][node2]["node2.dbcan.target_type"] != 'N/A':
-                print(res_str, file=out_conserved_cazymes_targetfams)
+with open(conserved_cazymes_file, 'wt') as out_conserved_cazymes, open(conserved_cazymes_targetfams_file, 'wt') as out_conserved_cazymes_targetfams:
+    # Header line for main table
+    out_conserved_cazymes.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n', file=out_conserved_cazymes)
+    out_conserved_cazymes_targetfams.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n', file=out_conserved_cazymes_targetfams)
+    for node1 in conserv_dbcan_res:
+        for node2 in conserv_dbcan_res[node1]:
+                res_str=(f'{conserv_dbcan_res[node1][node2]["node1.sp.name"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node1.seq.name"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node1.seq.len"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node1.dbcan.subfamilies"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node1.dbcan.families"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node1.dbcan.classes"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node1.dbcan.target_type"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.sp.name"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.seq.name"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.seq.len"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.dbcan.subfamilies"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.dbcan.families"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.dbcan.classes"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["node2.dbcan.target_type"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["pident"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["evalue"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["qalgnlen"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["qalgnper"]:.1f}\t'
+                    f'{conserv_dbcan_res[node1][node2]["salgnlen"]}\t'
+                    f'{conserv_dbcan_res[node1][node2]["salgnper"]:.1f}\t'
+                    f'{conserv_dbcan_res[node1][node2]["bidirectional"]}')
+                out_conserved_cazymes.write(res_str)
+                # If either side matches a configured target group, also write to the target-families file
+                if conserv_dbcan_res[node1][node2]["node1.dbcan.target_type"] != 'N/A' or conserv_dbcan_res[node1][node2]["node2.dbcan.target_type"] != 'N/A':
+                    out_conserved_cazymes_targetfams.write(res_str)
