@@ -43,7 +43,10 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from Bio import SeqIO
 import argparse
-
+import math
+import networkx as nx
+import igraph as ig
+import leidenalg as la
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Generates a distilled TE file from genome-specific runs of TE annotation in several species')
@@ -172,6 +175,63 @@ def to_graph_structs(keep_dbcan_results, undirected=True):
 
     return nodes, edges
 
+def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0):
+    """
+    Read a GraphML file, run Leiden clustering, and return cluster assignments.
+
+    Args:
+      graphmlfile: path to input GraphML file
+    """
+    log(f'Running graph community detection on {graphmlfile}',1,verbose=1)
+    Gx = nx.read_graphml(graphmlfile)
+    num_edge_attrs = ["pident", "evalue", "qalgnlen", "qalgnper", "salgnlen", "salgnper"]
+    for u, v, d in Gx.edges(data=True):
+        for k in num_edge_attrs:
+            if k in d:
+                try:
+                    d[k] = float(d[k])
+                except Exception:
+                    d[k] = float("nan")
+
+    # Composite weight: Balanced (F1/Harmonic coverage) x identity:
+    for u, v, d in Gx.edges(data=True):
+        p = d.get("pident", 0.0) / 100.0
+        q = d.get("qalgnper", 0.0) / 100.0
+        s = d.get("salgnper", 0.0) / 100.0
+        H = 0.0 if (q+s)==0 else (2*q*s)/(q+s)
+        d["w"] = p * H
+    
+    # drop weak edges
+    if weight_threshold > 0:
+        weak_edges = [(u, v) for u, v, d in Gx.edges(data=True)
+                      if d.get("w", 0.0) < args.weight_threshold]
+        Gx.remove_edges_from(weak_edges)
+        log(f"Retained {Gx.number_of_edges()} edges after threshold {weight_threshold}",1,verbose=1)
+
+    # --- convert to igraph
+    log(f"Converting NetworkX graph to igraph",1,verbose=1)
+    g = ig.Graph.from_networkx(Gx)
+
+    # Ensure weight attribute exists (igraph expects a list)
+    if "w" not in g.es.attributes():
+        g.es["w"] = [1.0] * g.ecount()
+
+    # --- Leiden clustering  https://pmc.ncbi.nlm.nih.gov/articles/PMC6435756/
+    log("Running Leiden community detection",1,verbose=1)
+    part = la.find_partition(
+        g,
+        la.RBConfigurationVertexPartition,
+        weights=g.es["w"],
+        resolution_parameter=resolution,
+        seed=42
+    )
+    log(f"Detected {len(part)} communities; modularity={part.quality():.4f}",1,verbose=1)
+
+    seq2clusters={}
+    for v in g.vs:
+        seq2clusters[v['name']] = part.membership[v.index]
+
+    return seq2clusters
 def _gml_type(value):
     """Infer GraphML attribute types."""
     if isinstance(value, bool):  return "boolean"
@@ -193,6 +253,34 @@ def _collect_attr_schema(nodes_dict, edges_list):
             edge_keys.setdefault(k, _gml_type(v))
     return node_keys, edge_keys
 
+def _format_for_graphml(v, gtype):
+    # Normalize by declared GraphML type
+    if gtype == "boolean":
+        return "true" if bool(v) else "false"
+    if gtype in ("double", "int"):
+        # Replace NaN/Inf and clamp extremes
+        if isinstance(v, (int, float)):
+            if isinstance(v, float) and not math.isfinite(v):
+                v = 0.0
+            # clamp to safe IEEE range (igraph chokes on overflows)
+            if isinstance(v, float):
+                if v > 1e308: v = 1e308
+                if v < -1e308: v = -1e308
+                return f"{v:.12g}"           # canonical float
+            else:
+                return str(int(v))
+        # If value isn't numeric but type says numeric -> coerce to 0
+        return "0"
+    # default: string
+    return "" if v is None else str(v)
+
+def _collect_type_from_keyid(kid, key_index, node_schema, edge_schema, domain, name):
+    # Look up the gtype you registered earlier; fall back to "string"
+    if domain == "node":
+        return node_schema.get(name, "string")
+    else:
+        return edge_schema.get(name, "string")
+    
 def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
     """
     Serialize nodes/edges into GraphML.
@@ -242,8 +330,10 @@ def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
             if kid is None:
                 add_key(k, "node", _gml_type(v))
                 kid = key_index[("node", k)]
+            gtype = _collect_type_from_keyid(kid, key_index, node_schema, edge_schema, domain="node", name=k)
             d = ET.SubElement(n, ET.QName(NS["g"], "data"), key=kid)
-            d.text = str(v)
+            d.text = _format_for_graphml(v, gtype)
+            # d.text = str(v)
     for i, (u, v, *rest) in enumerate(edges):
         attrs = rest[0] if rest else {}
         e = ET.SubElement(graph, ET.QName(NS["g"], "edge"),
@@ -256,8 +346,10 @@ def write_graphml(nodes, edges, path, directed=False, default_edge_weight=None):
             if kid is None:
                 add_key(k, "edge", _gml_type(v))
                 kid = key_index[("edge", k)]
+            gtype = _collect_type_from_keyid(kid, key_index, node_schema, edge_schema, domain="edge", name=k)
             d = ET.SubElement(e, ET.QName(NS["g"], "data"), key=kid)
-            d.text = str(v)
+            d.text = _format_for_graphml(v, gtype)
+            # d.text = str(v)
     rough = ET.tostring(graphml, encoding="utf-8")
     pretty = minidom.parseString(rough).toprettyxml(indent="  ", encoding="utf-8")
     with open(path, "wb") as fh:
@@ -663,6 +755,11 @@ nodes, edges =to_graph_structs(conserv_dbcan_res, undirected=True)
 write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=False)
 
 # ----------------------------------------
+# Run Leiden clustering on the graph
+# ----------------------------------------
+seqs2clusters=get_leiden_graph_communities(graphmlfile=f"{args.prefix}.conservedCAZymes.graphml",weight_threshold=0.4,resolution=1.0)
+
+# ----------------------------------------
 # Write tabular outputs
 # ----------------------------------------
 conserved_cazymes_file = f"{args.prefix}.conservedCAZymes.txt"
@@ -685,7 +782,7 @@ sorted_species = sorted(species)
 
 with open(sp803280_conserved_cazymes_file, "wt") as out_sp803280_conserved_cazymes:
     # Header: sp1, seqid_sp1, then one column per species
-    header = "sp1\tseqid_sp1(fam)\ttarget\t" + "\t".join(sorted_species) + "\n"
+    header = "sp1\tseqid_sp1(fam)\ttarget\t" + "\t".join(sorted_species) + "\tcluster\n"
     out_sp803280_conserved_cazymes.write(header)
 
     for sp1, seqdict in sp803280_kepth_hits.items():
@@ -710,6 +807,12 @@ with open(sp803280_conserved_cazymes_file, "wt") as out_sp803280_conserved_cazym
                     cell = ""  # keep column alignment
 
                 row_cells.append(cell)
+            
+            if seqid_sp1 in seqs2clusters:
+                cluster_id = seqs2clusters[seqid_sp1]
+            else:
+                cluster_id = "NA"
+            row_cells.append(str(cluster_id))
 
             out_sp803280_conserved_cazymes.write("\t".join(row_cells) + "\n")
 
