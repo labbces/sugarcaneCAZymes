@@ -827,12 +827,15 @@ with open(sp803280_conserved_cazymes_file, "wt") as out_sp803280_conserved_cazym
 # Emit records for all conserved pairs; also write a filtered file for target families
 with open(conserved_cazymes_file, 'wt') as out_conserved_cazymes, open(conserved_cazymes_targetfams_file, 'wt') as out_conserved_cazymes_targetfams:
     # Header line for main table
-    out_conserved_cazymes.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n')
-    out_conserved_cazymes_targetfams.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n')
+    out_conserved_cazymes.write('#node1.sp.name\tnode1.seq.name\tnode1.cluster\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.cluster\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n')
+    out_conserved_cazymes_targetfams.write('#node1.sp.name\tnode1.seq.name\tnode1.cluster\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.cluster\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n')
     for node1 in conserv_dbcan_res:
         for node2 in conserv_dbcan_res[node1]:
+                node1_cluster=seqs2clusters.get(conserv_dbcan_res[node1][node2]['node1.seq.name'], 'NA')
+                node2_cluster=seqs2clusters.get(conserv_dbcan_res[node1][node2]['node2.seq.name'], 'NA')
                 res_str=(f'{conserv_dbcan_res[node1][node2]["node1.sp.name"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node1.seq.name"]}\t'
+                    f'{node1_cluster}\t'
                     f'{conserv_dbcan_res[node1][node2]["node1.seq.len"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node1.dbcan.subfamilies"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node1.dbcan.families"]}\t'
@@ -840,6 +843,7 @@ with open(conserved_cazymes_file, 'wt') as out_conserved_cazymes, open(conserved
                     f'{conserv_dbcan_res[node1][node2]["node1.dbcan.target_type"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node2.sp.name"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node2.seq.name"]}\t'
+                    f'{node2_cluster}\t'
                     f'{conserv_dbcan_res[node1][node2]["node2.seq.len"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node2.dbcan.subfamilies"]}\t'
                     f'{conserv_dbcan_res[node1][node2]["node2.dbcan.families"]}\t'
