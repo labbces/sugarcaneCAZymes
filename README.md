@@ -27,11 +27,21 @@ Pipeline steps:
 - Python 3.9+
 - Biopython (`Bio.SeqIO`)
 - Standard library: `argparse`, `collections`, `glob`, `gzip`, `os`, `re`, `xml.etree`, `xml.dom`
+- Graph analysis: networkx and igraph and leidenalg
 
-Install Biopython:
+Create a python virtual environment and activate it:
 
 ```bash
-pip install biopython
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+```
+
+
+Install libraries:
+
+```bash
+pip install biopython networkx python-igraph leidenalg
 ```
 
 ---
