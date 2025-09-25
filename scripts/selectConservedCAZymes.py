@@ -362,6 +362,14 @@ def select_diamond_results(diamond_folder='data/diamond',
 
     keep_dbcan_results = defaultdict(dict)
     count_kepth_hits=defaultdict(lambda: defaultdict(int))
+    sp803280_conserved_hits = defaultdict(
+            lambda: defaultdict(
+                lambda: {
+                    "queryseqinfo": {},
+                    "hits": defaultdict(lambda: defaultdict(dict))  # hits[sp2][seqname2] -> dict
+                }))
+    species_dict={}
+
     # ------------------------------------------------------------
     # 1) Read SpeciesIDs.txt: map int ID -> species name
     #    Only species present in dbCAN results are kept.
@@ -437,6 +445,8 @@ def select_diamond_results(diamond_folder='data/diamond',
             continue
         x_name = id_to_spname.get(x_id, str(x_id))
         y_name = id_to_spname.get(y_id, str(y_id))
+        species_dict[x_name]=1
+        species_dict[y_name]=1
         
         # ------------------------------------------------------------
         # Build (or reuse) on-disk FASTA indexes for both species
@@ -506,18 +516,39 @@ def select_diamond_results(diamond_folder='data/diamond',
                     # keeping hits with at least 80% identity, e-value < 1e-5, and at least 50% alignment coverage in both sequences
                     bidirectional = False
                     if float(cols[2]) >= 80 and float(cols[10]) < 1e-5 and qalgnper >= 50 and salgnper >= 50:
-
-                        # If we already stored the reverse edge, mark it as bidirectional and skip adding the duplicate
-                        if (spseqname2 in keep_dbcan_results) and (spseqname1 in keep_dbcan_results[spseqname2]):
-                                bidirectional = True
-                                keep_dbcan_results[spseqname2][spseqname1]['bidirectional'] = bidirectional
-                                continue
                         # Parse dbCAN subfamilies (pipe-separated string) for both nodes
                         subfamilies1_list=dbcan_res[id_to_spname[int(sp1)]][seqname1].split('|')
                         classes1, sub_families1, families1, ufam1_type_str =produce_families_strs(subfamilies1_list,family_to_targets)
                         subfamilies2_list=dbcan_res[id_to_spname[int(sp2)]][seqname2].split('|')
                         classes2, sub_families2, families2, ufam2_type_str =produce_families_strs(subfamilies2_list,family_to_targets)
 
+                        if id_to_spname[int(sp1)] == 'SP803280':
+                            entry = sp803280_conserved_hits[id_to_spname[int(sp1)]][seqname1]
+                            entry["queryseqinfo"].update({
+                                'sp1.dbcan.subfamilies': sub_families1,
+                                'sp1.dbcan.families': families1,
+                                'sp1.dbcan.classes': classes1,
+                                'sp1.dbcan.target_type': ufam1_type_str,
+                            })
+                            # print(entry)
+                            entry["hits"][id_to_spname[int(sp2)] ][seqname2] = {
+                                'pident': float(cols[2]),
+                                'evalue': float(cols[10]),
+                                'qalgnlen': qalgnlen,
+                                'salgnlen': salgnlen,
+                                'qalgnper': qalgnper,
+                                'salgnper': salgnper,
+                                'sp2.dbcan.subfamilies': sub_families2,
+                                'sp2.dbcan.families':    families2,
+                                'sp2.dbcan.classes':     classes2,
+                                'sp2.dbcan.target_type': ufam2_type_str,
+                            }
+                        # If we already stored the reverse edge, mark it as bidirectional and skip adding the duplicate
+                        if (spseqname2 in keep_dbcan_results) and (spseqname1 in keep_dbcan_results[spseqname2]):
+                                bidirectional = True
+                                keep_dbcan_results[spseqname2][spseqname1]['bidirectional'] = bidirectional
+                                continue
+                        
                         count_kepth_hits[id_to_spname[int(sp1)]][id_to_spname[int(sp2)]]+=1
                         # Store record
                         keep_dbcan_results[spseqname1][spseqname2] = {
@@ -544,7 +575,7 @@ def select_diamond_results(diamond_folder='data/diamond',
                             'bidirectional': bidirectional
                         }
                         # print(f'{id_to_spname[int(sp1)]}\t{seqname1}\t{dbcan_res[id_to_spname[int(sp1)]][seqname1]}\t{id_to_spname[int(sp1)]}\t{seq_len1}\t{seqname2}\t{dbcan_res[id_to_spname[int(sp2)]][seqname2]}\t{cols[2]}\t{cols[10]}\t{seq_len2}\t{qalgnlen}\t{qalgnper:.1f}\t{salgnlen}\t{salgnper:.1f}', file=out_conserved_cazymes)
-    return keep_dbcan_results, count_kepth_hits
+    return keep_dbcan_results, count_kepth_hits, sp803280_conserved_hits, species_dict
 
 # ======================
 # MAIN EXECUTION
@@ -617,7 +648,7 @@ dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/',summary_file=summa
 # ----------------------------------------
 # Read DIAMOND results, filter, and consolidate conserved CAZymes
 # ----------------------------------------
-conserv_dbcan_res, count_kepth_hits = select_diamond_results(diamond_folder='data/diamond.orig', 
+conserv_dbcan_res, count_kepth_hits, sp803280_kepth_hits, species = select_diamond_results(diamond_folder='data/diamond.orig', 
                                    species_ids_file='SpeciesIDs.txt', 
                                    sequences_ids_file='SequenceIDs.txt.gz', 
                                    sequences_folder='data/proteins/', 
@@ -646,11 +677,49 @@ with open(summary_file, 'at') as out_summary:
             out_summary.write(f'{sp1}\t{sp2}\t{count_kepth_hits[sp1][sp2]}\n')
 
 log(f"Writing conserved CAZymes to: {conserved_cazymes_file}", 1, args.verbose)
+
+#write results table for SP803280 conserved CAZymes
+sp803280_conserved_cazymes_file = f"{args.prefix}.SP803280.conservedCAZymes.txt"
+log(f"Writing SP803280 conserved CAZymes to: {sp803280_conserved_cazymes_file}", 1, args.verbose)
+sorted_species = sorted(species)
+
+with open(sp803280_conserved_cazymes_file, "wt") as out_sp803280_conserved_cazymes:
+    # Header: sp1, seqid_sp1, then one column per species
+    header = "sp1\tseqid_sp1(fam)\ttarget\t" + "\t".join(sorted_species) + "\n"
+    out_sp803280_conserved_cazymes.write(header)
+
+    for sp1, seqdict in sp803280_kepth_hits.items():
+        for seqid_sp1, entry in seqdict.items():
+            q_subs  = entry["queryseqinfo"].get("sp1.dbcan.subfamilies", "")
+            q_ttype = entry["queryseqinfo"].get("sp1.dbcan.target_type", "")
+            seq1_annot = f"{seqid_sp1}({q_subs})"
+            row_cells = [sp1, seq1_annot, q_ttype]
+
+            for sp2 in sorted_species:
+                if sp2 in entry["hits"]:
+                    annotated = []
+                    # deterministic order of target seq IDs
+                    for seqid_sp2, hitinfo in sorted(entry["hits"][sp2].items()):
+                        subs = hitinfo.get("sp2.dbcan.subfamilies", "")
+                        # fams = hitinfo.get("sp2.dbcan.families", "")
+                        # clss = hitinfo.get("sp2.dbcan.classes", "")
+                        # annotated.append(f"{seqid_sp2}({subs};{fams};{clss})")
+                        annotated.append(f"{seqid_sp2}({subs})")
+                    cell = ",".join(annotated)
+                else:
+                    cell = ""  # keep column alignment
+
+                row_cells.append(cell)
+
+            out_sp803280_conserved_cazymes.write("\t".join(row_cells) + "\n")
+
+
+
 # Emit records for all conserved pairs; also write a filtered file for target families
 with open(conserved_cazymes_file, 'wt') as out_conserved_cazymes, open(conserved_cazymes_targetfams_file, 'wt') as out_conserved_cazymes_targetfams:
     # Header line for main table
-    out_conserved_cazymes.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n', file=out_conserved_cazymes)
-    out_conserved_cazymes_targetfams.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n', file=out_conserved_cazymes_targetfams)
+    out_conserved_cazymes.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n')
+    out_conserved_cazymes_targetfams.write('#node1.sp.name\tnode1.seq.name\tnode1.seq.len\tnode1.dbcan.subfamilies\tnode1.dbcan.families\tnode1.dbcan.classes\tnode1.dbcan.target_type\tnode2.sp.name\tnode2.seq.name\tnode2.seq.len\tnode2.dbcan.subfamilies\tnode2.dbcan.families\tnode2.dbcan.classes\tnode2.dbcan.target_type\tpident\tevalue\tqalgnlen\tqalgnper\tsalgnlen\tsalgnper\tbidirectional\n')
     for node1 in conserv_dbcan_res:
         for node2 in conserv_dbcan_res[node1]:
                 res_str=(f'{conserv_dbcan_res[node1][node2]["node1.sp.name"]}\t'
