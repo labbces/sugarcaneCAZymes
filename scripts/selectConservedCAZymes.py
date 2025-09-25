@@ -204,13 +204,18 @@ def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0
     # drop weak edges
     if weight_threshold > 0:
         weak_edges = [(u, v) for u, v, d in Gx.edges(data=True)
-                      if d.get("w", 0.0) < args.weight_threshold]
+                      if d.get("w", 0.0) < weight_threshold]
         Gx.remove_edges_from(weak_edges)
         log(f"Retained {Gx.number_of_edges()} edges after threshold {weight_threshold}",1,verbose=1)
 
     # --- convert to igraph
     log(f"Converting NetworkX graph to igraph",1,verbose=1)
     g = ig.Graph.from_networkx(Gx)
+
+    # Promote a stable vertex identifier
+    if "_nx_name" in g.vs.attributes():
+        g.vs["name"] = g.vs["_nx_name"]   # use original NX node key
+    
 
     # Ensure weight attribute exists (igraph expects a list)
     if "w" not in g.es.attributes():
@@ -461,7 +466,7 @@ def select_diamond_results(diamond_folder='data/diamond',
                     "hits": defaultdict(lambda: defaultdict(dict))  # hits[sp2][seqname2] -> dict
                 }))
     species_dict={}
-
+    fname_re = re.compile(r'Blast(\d+)_(\d+)\.txt\.gz$')
     # ------------------------------------------------------------
     # 1) Read SpeciesIDs.txt: map int ID -> species name
     #    Only species present in dbCAN results are kept.
@@ -526,10 +531,9 @@ def select_diamond_results(diamond_folder='data/diamond',
     # ------------------------------------------------------------
     # 3) Iterate DIAMOND BlastX_Y.txt.gz files and collect conserved hits
     # ------------------------------------------------------------
-    pattern = os.path.join(diamond_folder, "Blast*_*.txt.gz")
-    for file_path in glob.glob(pattern):
-        fname = os.path.basename(file_path)
-        m = re.match(r'Blast(\d+)_(\d+)\.txt\.gz$', fname)
+    pattern = sorted(glob.glob(os.path.join(diamond_folder, "Blast*_*.txt.gz")))
+    for file_path in pattern:
+        m = fname_re.search(os.path.basename(file_path))
         if not m:
             continue
         x_id, y_id = int(m.group(1)), int(m.group(2))
@@ -731,22 +735,24 @@ for group, families in targetCAZyFamilies.items():
             
         family_to_targets[fam][group] = entry
 
+summary_file=f'{args.prefix}.dbCAN.summary.txt'
+
 # ----------------------------------------
 # Load dbCAN overview results for all species
 # ----------------------------------------
-summary_file=f'{args.prefix}.dbCAN.summary.txt'
+
 dbcan_res=read_dbcan_tables(folder_path='data/dbCAN_results/',summary_file=summary_file, verbose=args.verbose)
 
 # ----------------------------------------
 # Read DIAMOND results, filter, and consolidate conserved CAZymes
 # ----------------------------------------
 conserv_dbcan_res, count_kepth_hits, sp803280_kepth_hits, species = select_diamond_results(diamond_folder='data/diamond.orig', 
-                                   species_ids_file='SpeciesIDs.txt', 
-                                   sequences_ids_file='SequenceIDs.txt.gz', 
-                                   sequences_folder='data/proteins/', 
-                                   dbcan_res=dbcan_res, 
-                                   family_to_targets=family_to_targets,
-                                   verbose=args.verbose)
+                                species_ids_file='SpeciesIDs.txt', 
+                                sequences_ids_file='SequenceIDs.txt.gz', 
+                                sequences_folder='data/proteins/', 
+                                dbcan_res=dbcan_res, 
+                                family_to_targets=family_to_targets,
+                                verbose=args.verbose)
 
 # ----------------------------------------
 # Build graph and write GraphML
