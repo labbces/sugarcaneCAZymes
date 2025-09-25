@@ -12,3 +12,4 @@ dbcan_family_vs_cazy_families.tsv
 dbcan_vs_cazy_families.tsv
 dbcan_vs_cazy_families_perseq.tsv
 Sugarcane.dbCAN.summary.txt
+venv
