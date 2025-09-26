@@ -175,14 +175,14 @@ def to_graph_structs(keep_dbcan_results, undirected=True):
 
     return nodes, edges
 
-def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0):
+def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0, cluster_file=None, verbose=1):
     """
     Read a GraphML file, run Leiden clustering, and return cluster assignments.
 
     Args:
       graphmlfile: path to input GraphML file
     """
-    log(f'Running graph community detection on {graphmlfile}',1,verbose=1)
+    log(f'Running graph community detection on {graphmlfile}',1,verbose=verbose)
     Gx = nx.read_graphml(graphmlfile)
     num_edge_attrs = ["pident", "evalue", "qalgnlen", "qalgnper", "salgnlen", "salgnper"]
     for u, v, d in Gx.edges(data=True):
@@ -206,10 +206,10 @@ def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0
         weak_edges = [(u, v) for u, v, d in Gx.edges(data=True)
                       if d.get("w", 0.0) < weight_threshold]
         Gx.remove_edges_from(weak_edges)
-        log(f"Retained {Gx.number_of_edges()} edges after threshold {weight_threshold}",1,verbose=1)
+        log(f"Retained {Gx.number_of_edges()} edges after threshold {weight_threshold}",1,verbose=verbose)
 
     # --- convert to igraph
-    log(f"Converting NetworkX graph to igraph",1,verbose=1)
+    log(f"Converting NetworkX graph to igraph",1,verbose=verbose)
     g = ig.Graph.from_networkx(Gx)
 
     # Promote a stable vertex identifier
@@ -222,7 +222,7 @@ def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0
         g.es["w"] = [1.0] * g.ecount()
 
     # --- Leiden clustering  https://pmc.ncbi.nlm.nih.gov/articles/PMC6435756/
-    log("Running Leiden community detection",1,verbose=1)
+    log("Running Leiden community detection",1,verbose=verbose)
     part = la.find_partition(
         g,
         la.RBConfigurationVertexPartition,
@@ -230,12 +230,15 @@ def get_leiden_graph_communities(graphmlfile,weight_threshold=0.4,resolution=1.0
         resolution_parameter=resolution,
         seed=42
     )
-    log(f"Detected {len(part)} communities; modularity={part.quality():.4f}",1,verbose=1)
+    log(f"Detected {len(part)} communities; modularity={part.quality():.4f}",1,verbose=verbose)
 
     seq2clusters={}
-    for v in g.vs:
-        seq2clusters[v['name']] = part.membership[v.index]
-
+    with open(cluster_file,'wt') as out_clusters:
+        out_clusters.write("SequenceID\tClusterID\n")
+        for v in g.vs:
+            seq2clusters[v['name']] = part.membership[v.index]
+            out_clusters.write(f"{v['name']}\t{part.membership[v.index]}\n")
+    
     return seq2clusters
 def _gml_type(value):
     """Infer GraphML attribute types."""
@@ -763,7 +766,7 @@ write_graphml(nodes, edges, f"{args.prefix}.conservedCAZymes.graphml", directed=
 # ----------------------------------------
 # Run Leiden clustering on the graph
 # ----------------------------------------
-seqs2clusters=get_leiden_graph_communities(graphmlfile=f"{args.prefix}.conservedCAZymes.graphml",weight_threshold=0.4,resolution=1.0)
+seqs2clusters=get_leiden_graph_communities(graphmlfile=f"{args.prefix}.conservedCAZymes.graphml",weight_threshold=0.4,resolution=1.0,cluster_file=f"{args.prefix}.conservedCAZymes.clusters.tsv", verbose=1)
 
 # ----------------------------------------
 # Write tabular outputs
